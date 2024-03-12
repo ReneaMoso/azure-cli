@@ -22,11 +22,13 @@ class List(AAZCommand):
     """
 
     _aaz_info = {
-        "version": "2018-05-01",
+        "version": "2023-07-01-preview",
         "resources": [
-            ["mgmt-plane", "/subscriptions/{}/resourcegroups/{}/providers/microsoft.network/dnszones/{}/recordsets", "2018-05-01"],
+            ["mgmt-plane", "/subscriptions/{}/resourcegroups/{}/providers/microsoft.network/dnszones/{}/recordsets", "2023-07-01-preview"],
         ]
     }
+
+    AZ_SUPPORT_PAGINATION = True
 
     def _handler(self, command_args):
         super()._handler(command_args)
@@ -119,7 +121,7 @@ class List(AAZCommand):
         def query_parameters(self):
             parameters = {
                 **self.serialize_query_param(
-                    "api-version", "2018-05-01",
+                    "api-version", "2023-07-01-preview",
                     required=True,
                 ),
             }
@@ -230,6 +232,11 @@ class List(AAZCommand):
             properties.target_resource = AAZObjectType(
                 serialized_name="targetResource",
             )
+            _ListHelper._build_schema_sub_resource_read(properties.target_resource)
+            properties.traffic_management_profile = AAZObjectType(
+                serialized_name="trafficManagementProfile",
+            )
+            _ListHelper._build_schema_sub_resource_read(properties.traffic_management_profile)
 
             aaaa_records = cls._schema_on_200.value.Element.properties.aaaa_records
             aaaa_records.Element = AAZObjectType()
@@ -357,14 +364,26 @@ class List(AAZCommand):
             metadata = cls._schema_on_200.value.Element.properties.metadata
             metadata.Element = AAZStrType()
 
-            target_resource = cls._schema_on_200.value.Element.properties.target_resource
-            target_resource.id = AAZStrType()
-
             return cls._schema_on_200
 
 
 class _ListHelper:
     """Helper class for List"""
+
+    _schema_sub_resource_read = None
+
+    @classmethod
+    def _build_schema_sub_resource_read(cls, _schema):
+        if cls._schema_sub_resource_read is not None:
+            _schema.id = cls._schema_sub_resource_read.id
+            return
+
+        cls._schema_sub_resource_read = _schema_sub_resource_read = AAZObjectType()
+
+        sub_resource_read = _schema_sub_resource_read
+        sub_resource_read.id = AAZStrType()
+
+        _schema.id = cls._schema_sub_resource_read.id
 
 
 __all__ = ["List"]

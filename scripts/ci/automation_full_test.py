@@ -36,7 +36,7 @@ job_name = os.environ.get('JOB_NAME', None)
 pull_request_number = os.environ.get('PULL_REQUEST_NUMBER', None)
 enable_pipeline_result = bool(job_name and python_version)
 unique_job_name = ' '.join([job_name, python_version, profile, str(instance_idx)]) if enable_pipeline_result else None
-enable_traceback = True if os.environ.get('ENABLE_TRACEBACK').lower() == 'true' else False
+enable_traceback = True if (os.environ.get('ENABLE_TRACEBACK') is not None and os.environ.get('ENABLE_TRACEBACK').lower() == 'true') else False
 cli_jobs = {
             'acr': 45,
             'acs': 62,
@@ -271,6 +271,19 @@ def remove_extension(extension_module):
     return error_flag
 
 
+def rerun_setup(cli_repo_path, extension_repo_path):
+    try:
+        if extension_repo_path:
+            cmd = ['azdev', 'setup', '-c', cli_repo_path, '-r', extension_repo_path, '--debug']
+        else:
+            cmd = ['azdev', 'setup', '-c', cli_repo_path, '--debug']
+        error_flag = run_command(cmd, check_return_code=True)
+    except Exception:
+        error_flag = True
+
+    return error_flag
+
+
 def git_restore(file_path):
     if not file_path:
         return
@@ -450,6 +463,12 @@ def get_pipeline_result(test_result_fp, pipeline_result):
                 for i in pipeline_result[unique_job_name]['Details'][0]['Details'][0]['Details'][0]['Details']:
                     if i['Module'] == module:
                         i['Status'] = 'Failed'
+                        # GitHub has a comment length limit of 65535, we must ensure that the length is less than 65535.
+                        # The azure cli bot will also add extra html characters.
+                        # So the number of characters cannot be accurately calculated.
+                        # Using indent=4 is just a rough estimate.
+                        if len(json.dumps(pipeline_result, indent=4)) + len(message) > 65535:
+                            message = 'The error message is too long, please check the pipeline log for details.'
                         i['Content'] = build_markdown_content(state, test_case, message, line, i['Content'])
                         break
             else:
@@ -458,7 +477,6 @@ def get_pipeline_result(test_result_fp, pipeline_result):
                         i['Status'] = 'Succeeded' if i['Status'] != 'Failed' else 'Failed'
                         break
 
-    print(json.dumps(pipeline_result, indent=4))
     return pipeline_result
 
 
@@ -513,7 +531,13 @@ class AutomaticScheduling(object):
     def get_all_modules(self):
         result = get_path_table()
         # only get modules and core, ignore extensions
-        self.modules = {**result['mod'], **result['core']}
+        result_mod = result['mod']
+        result_core = result['core']
+
+        # make sure the dictionary is in order, otherwise job assignments will be random.
+        from collections import OrderedDict
+        self.modules = OrderedDict(sorted((result_mod | result_core).items()))
+        logger.info(json.dumps(self.modules, indent=2))
 
     def get_extension_modules(self):
         out = subprocess.Popen(['azdev', 'extension', 'list', '-o', 'tsv'], stdout=subprocess.PIPE)
@@ -557,6 +581,7 @@ class AutomaticScheduling(object):
             self.works[idx][k] = v
         # instance_idx: 1~n, python list index: 0~n-1
         self.instance_idx -= 1
+        logger.info(json.dumps(self.works, indent=2))
         return self.works[self.instance_idx]
 
     def run_instance_modules(self, instance_modules):
@@ -577,7 +602,7 @@ class AutomaticScheduling(object):
             serial_tests.append('cloud')
         pipeline_result = build_pipeline_result() if enable_pipeline_result else None
         pytest_args = '-o junit_family=xunit1 --durations=10'
-        if enable_traceback:
+        if not enable_traceback:
             pytest_args += ' --tb=no'
         if parallel_tests:
             azdev_test_result_fp = os.path.join(azdev_test_result_dir, f"test_results_{python_version}_{profile}_{instance_idx}.parallel.xml")
@@ -599,12 +624,17 @@ class AutomaticScheduling(object):
         for module, path in instance_modules.items():
             run_command(["git", "checkout", f"regression_test_{os.getenv('BUILD_BUILDID')}"], check_return_code=True)
             error_flag = install_extension(module)
+            logger.info(f"Finish installing extension {module}, error_flag: {error_flag}")
             if not error_flag:
                 azdev_test_result_fp = os.path.join(azdev_test_result_dir, f"test_results_{module}.xml")
                 cmd = ['azdev', 'test', module, '--discover', '--no-exitfirst', '--verbose',
                        '--xml-path', azdev_test_result_fp, '--pytest-args', '"--durations=10"']
                 error_flag = process_test(cmd, azdev_test_result_fp, live_rerun=fix_failure_tests, modules=[module])
+                logger.info(f"Finish testing extension {module}, error_flag: {error_flag}")
             remove_extension(module)
+            logger.info(f"Finish removing extension {module}, error_flag: {error_flag}")
+            if error_flag:
+                rerun_setup(cli_repo_path=os.getenv('BUILD_SOURCESDIRECTORY'), extension_repo_path=working_directory)
             global_error_flag = global_error_flag or error_flag
         return global_error_flag
 
